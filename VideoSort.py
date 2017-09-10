@@ -238,6 +238,12 @@
 # unique suffixes are added at the end of file names, e.g. My.Show.(2).mkv.
 #Overwrite=no
 
+# Keep original files (yes, no).
+#
+# Whether to keep the original files in the download directory after
+# reprocessing is done. WARNING: this negates the 'Cleanup' option below.
+#KeepOriginal=no
+
 # Delete download directory after renaming (yes, no).
 #
 # If after successful sorting all remaining files in the download directory
@@ -296,7 +302,7 @@ if os.environ['NZBPP_PARSTATUS'] == '1' or os.environ['NZBPP_PARSTATUS'] == '4' 
 required_options = ('NZBPO_MoviesDir', 'NZBPO_SeriesDir', 'NZBPO_DatedDir',
     'NZBPO_OtherTvDir', 'NZBPO_VideoExtensions', 'NZBPO_SatelliteExtensions', 'NZBPO_MinSize',
     'NZBPO_MoviesFormat', 'NZBPO_SeriesFormat', 'NZBPO_OtherTvFormat', 'NZBPO_DatedFormat',
-    'NZBPO_EpisodeSeparator', 'NZBPO_Overwrite', 'NZBPO_Cleanup', 'NZBPO_LowerWords', 'NZBPO_UpperWords',
+    'NZBPO_EpisodeSeparator', 'NZBPO_Overwrite', 'NZBPO_KeepOriginal', 'NZBPO_Cleanup', 'NZBPO_LowerWords', 'NZBPO_UpperWords',
     'NZBPO_TvCategories', 'NZBPO_Preview', 'NZBPO_Verbose')
 for optname in required_options:
     if (not optname.upper() in os.environ):
@@ -320,6 +326,7 @@ video_extensions=os.environ['NZBPO_VIDEOEXTENSIONS'].replace(' ', '').lower().sp
 satellite_extensions=os.environ['NZBPO_SATELLITEEXTENSIONS'].replace(' ', '').lower().split(',')
 min_size=int(os.environ['NZBPO_MINSIZE'])
 min_size <<= 20
+keep_original=os.environ['NZBPO_KEEPORIGINAL'] == 'yes'
 overwrite=os.environ['NZBPO_OVERWRITE'] == 'yes'
 cleanup=os.environ['NZBPO_CLEANUP'] == 'yes'
 preview=os.environ['NZBPO_PREVIEW'] == 'yes'
@@ -381,11 +388,15 @@ def guess_dupe_separator(format):
             return
 
 def unique_name(new):
-    """ Adds unique numeric suffix to destination file name to avoid overwriting
+    """ Adds unique numeric suffix to destination file/dir name to avoid overwriting
         such as "filename.(2).ext", "filename.(3).ext", etc.
         If existing file was created by the script it is renamed to "filename.(1).ext".
     """
-    fname, fext = os.path.splitext(new)
+    if os.path.isdir(new):
+        fname = new
+        fext = ''
+    else:
+        fname, fext = os.path.splitext(new)
     suffix_num = 2
     while True:
         new_name = fname + dupe_separator + '(' + str(suffix_num) + ')' + fext
@@ -409,17 +420,26 @@ def rename(old, new):
     if os.path.exists(new) or new in moved_dst_files:
         if overwrite and new not in moved_dst_files:
             os.remove(new)
-            optimized_move(old, new)
+            if keep_original:
+                shutil.copyfile(old, new)
+            else:
+                optimized_move(old, new)
             print('[INFO] Overwrote: %s' % new)
         else:
             # rename to filename.(2).ext, filename.(3).ext, etc.
             new = unique_name(new)
-            rename(old, new)
+            if keep_original:
+                shutil.copyfile(old, new)
+            else:
+                rename(old, new)
     else:
         if not preview:
             if not os.path.exists(os.path.dirname(new)):
                 os.makedirs(os.path.dirname(new))
-            optimized_move(old, new)
+            if keep_original:
+                shutil.copyfile(old, new)
+            else:
+                optimized_move(old, new)
         print('[INFO] Moved: %s' % new)
     moved_src_files.append(old)
     moved_dst_files.append(new)
@@ -502,6 +522,23 @@ def deep_scan_nfo(filename, ratio=deep_scan_ratio):
     except IOError as e:
         print('[ERROR] %s' % str(e))
     return best_guess
+
+
+def keep_original_dir():
+    """ Moves files back to original download directory.
+    """
+    if verbose:
+        print('Moving %s back to original dir' % download_dir)
+    # Parent dir which holds directories that needs processing.
+    post_process_dir = os.path.abspath(os.path.join(download_dir, os.pardir))
+    # New dir is in the parent, which is where the original data would be stored.
+    new_dir = os.path.join(post_process_dir, os.pardir, os.path.basename(download_dir))
+    if os.path.exists(new_dir):
+        new_dir = unique_name(new_dir)
+    print('[INFO] Moving %s back to original directory %s' % (download_dir, new_dir))
+    shutil.move(download_dir, new_dir)
+    if os.listdir(post_process_dir) == []:
+        os.rmdir(post_process_dir)
 
 
 def cleanup_download_dir():
@@ -1261,12 +1298,14 @@ for filename in moved_dst_files:
 if finaldir != '':
     print('[NZB] FINALDIR=%s' % finaldir)
 
-# Cleanup if:
+# Move original files if:
 # 1) files were moved AND
 # 2) no errors happen AND
-# 3) all remaining files are smaller than <MinSize>
-if cleanup and files_moved and not errors:
-    cleanup_download_dir()
+if files_moved and not errors:
+    if keep_original:
+        keep_original_dir()
+    elif cleanup and files_moved and not errors:
+        cleanup_download_dir()
 
 # Returing status to NZBGet
 if errors:
